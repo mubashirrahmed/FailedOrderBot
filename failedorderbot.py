@@ -16,6 +16,9 @@ CHAT_ID = int(os.getenv("CHAT_ID", 7831605046))
 bot = Bot(TOKEN)
 dp = Dispatcher()
 
+logging.basicConfig(level=logging.INFO)
+
+
 # =====================================================
 # ENSURE PLAYWRIGHT BROWSERS ON RENDER
 # =====================================================
