@@ -1,146 +1,128 @@
+import os
 import asyncio
-import re
-import aiohttp
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+from aiogram import Bot, Dispatcher, types
+from aiogram.enums import ParseMode
+from aiohttp import web
 
-# === TELEGRAM CONFIG ===
-TELEGRAM_BOT_TOKEN = "8207015657:AAFN50YiVxgugKx2qPZquNK5dGFsDOn8t6g"
-CHAT_ID = "7831605046"
+# =====================================================
+# LOAD ENV VARIABLES
+# =====================================================
 
-async def send_telegram(message: str):
-    """Send Telegram notification."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
+load_dotenv()
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            await session.post(url, data=data)
-        except Exception as e:
-            print("Telegram error:", e)
+WP_LOGIN_URL = os.getenv("WP_LOGIN_URL")
+WP_ORDERS_URL = os.getenv("WP_ORDERS_URL")
+WP_USERNAME = os.getenv("WP_USERNAME")
+WP_PASSWORD = os.getenv("WP_PASSWORD")
 
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
-async def check_orders():
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", 60))
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# =====================================================
+# GET FAILED ORDERS
+# =====================================================
+
+async def get_failed_orders():
+    print("🔍 Checking WordPress orders...")
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
+
         page = await context.new_page()
 
-        # LOGIN
-        await page.goto("https://korkortsfoton.se/wp-login.php?loggedout=true&wp_lang=sv_SE")
-        await page.fill("input[name='log']", "prijnen6@gmail.com")
-        await page.fill("input[name='pwd']", "prijnen6@gmail.com")
-        await page.click("input#wp-submit")
+        # Login to WordPress
+        await page.goto(WP_LOGIN_URL)
+        await page.fill("#user_login", WP_USERNAME)
+        await page.fill("#user_pass", WP_PASSWORD)
+        await page.click("#wp-submit")
+        await page.wait_for_load_state("domcontentloaded")
 
-        await asyncio.sleep(3)
+        # Navigate to processing orders
+        await page.goto(WP_ORDERS_URL)
+        await page.wait_for_selector("table.wp-list-table")
 
-        # GO TO PROCESSING ORDERS
-        await page.goto("https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing", wait_until="networkidle")
-        await asyncio.sleep(3)
+        rows = await page.query_selector_all("tbody tr")
 
-        # FETCH ROWS
-        all_rows = await page.query_selector_all("table.wp-list-table tbody tr")
-        if not all_rows:
-            all_rows = await page.query_selector_all("table.widefat tbody tr")
+        failed_orders = []
 
-        behandlas_orders = []
+        for row in rows:
+            status_el = await row.query_selector("mark.order-status > span")
+            status = await status_el.inner_text()
 
-        async def check_status(row):
-            try:
-                status_text = ""
-                selectors = [
-                    "td.column-order_status mark.status span",
-                    "td.column-order_status mark span",
-                    "td.order_status mark > span",
-                    "td.column-order_status mark"
-                ]
-                for s in selectors:
-                    el = await row.query_selector(s)
-                    if el:
-                        status_text = await el.inner_text()
-                        break
+            if "Failed" in status or "failed" in status:
+                order_id_el = await row.query_selector("td.order_title a")
+                order_id = await order_id_el.inner_text()
 
-                if "Behandlas" not in status_text:
-                    return
-
-                link = await row.query_selector("td.column-order_number a")
-                if not link:
-                    return
-
-                href = await link.get_attribute("href")
-                if not href:
-                    return
-
-                match = re.search(r'(?:post=|\bid=)(\d+)', href)
-                if match:
-                    behandlas_orders.append((match.group(1), href))
-            except:
-                pass
-
-        await asyncio.gather(*(check_status(row) for row in all_rows))
-
-        print("Orders in Processing:", behandlas_orders)
-
-        pages = []
-        order_urls = []
-
-        async def open_tab(order_id, href):
-            try:
-                new_page = await context.new_page()
-                await new_page.goto(href, wait_until="domcontentloaded", timeout=30000)
-                pages.append(new_page)
-                order_urls.append((order_id, href))
-            except:
-                pass
-
-        await asyncio.gather(*(open_tab(oid, href) for oid, href in behandlas_orders))
-
-        failed = []
-        updated = []
-
-        async def process_order(pg, order_id, url):
-            try:
-                await pg.wait_for_selector("#order_data", timeout=10000)
-
-                text = await pg.eval_on_selector_all("*", "els => els.map(el => el.textContent).join(' ').toLowerCase()")
-
-                if "ditt foto är nu redigerat" not in text:
-                    failed.append(order_id)
-                    return
-
-                btn = await pg.query_selector("#woocommerce-order-actions div.inside ul li:nth-child(2) button")
-                if btn:
-                    await btn.click()
-                    await asyncio.sleep(1)
-                    updated.append(order_id)
-                else:
-                    failed.append(order_id)
-
-            except:
-                failed.append(order_id)
-            finally:
-                await pg.close()
-
-        await asyncio.gather(*(process_order(pg, oid, url) for pg, (oid, url) in zip(pages, order_urls)))
+                failed_orders.append(order_id)
 
         await browser.close()
 
-        return updated, failed
+        return failed_orders
 
+# =====================================================
+# PERIODIC CHECKER
+# =====================================================
 
-async def main():
+async def periodic_check():
     while True:
-        print("🔄 Checking orders...")
-        updated, failed = await check_orders()
-
-        print("Updated:", updated)
-        print("Failed:", failed)
+        failed = await get_failed_orders()
 
         if failed:
-            msg = "⚠️ FAILED ORDERS DETECTED:\n" + "\n".join(failed)
-            await send_telegram(msg)
+            msg = "❌ *FAILED ORDERS FOUND:*\n" + "\n".join([f"• Order #{o}" for o in failed])
+            await bot.send_message(CHAT_ID, msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            print("✅ No failed orders.")
 
-        print("⏳ Waiting 60 seconds...")
-        await asyncio.sleep(60)  # repeat every 60 seconds
+        await asyncio.sleep(CHECK_INTERVAL)
 
+# =====================================================
+# COMMAND HANDLER
+# =====================================================
 
-asyncio.run(main())
+@dp.message(commands=["start"])
+async def start_cmd(message: types.Message):
+    await message.reply("👋 Bot is running and monitoring orders!")
+
+# =====================================================
+# DUMMY HTTP SERVER FOR RENDER
+# =====================================================
+
+async def health(request):
+    return web.Response(text="OK")
+
+async def start_web_app():
+    app = web.Application()
+    app.add_routes([web.get("/", health)])
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print(f"🌐 Dummy HTTP server running on port {port}")
+
+# =====================================================
+# START BOT
+# =====================================================
+
+async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("🧹 Webhook deleted. Polling starts...")
+
+    asyncio.create_task(start_web_app())
+    asyncio.create_task(periodic_check())
+
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
