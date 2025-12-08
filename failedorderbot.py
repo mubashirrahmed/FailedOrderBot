@@ -6,7 +6,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 from playwright.async_api import async_playwright
-
+import logging
 # =====================================================
 # 🔐 CONFIG
 # =====================================================
@@ -170,3 +170,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
