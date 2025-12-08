@@ -1,7 +1,6 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiohttp import web
@@ -126,3 +125,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
