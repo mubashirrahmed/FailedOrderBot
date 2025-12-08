@@ -1,4 +1,4 @@
-playwright
+aiogram==3.4.1
 aiohttp
 python-dotenv
-aiogram==3.4.1
+playwright==1.48.0
