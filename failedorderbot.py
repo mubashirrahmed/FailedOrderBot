@@ -17,34 +17,31 @@ bot = Bot(TOKEN)
 dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
-
+logger = logging.getLogger(__name__)
 
 # =====================================================
-# ENSURE PLAYWRIGHT BROWSERS ON RENDER
+# INSTALL PLAYWRIGHT BROWSERS ON RENDER (ONE-TIME)
 # =====================================================
 async def install_playwright_browsers():
-    if os.getenv("RENDER"):  # Only run on Render
-        print("Installing Playwright browsers on Render...")
+    if os.getenv("RENDER"):
+        logger.info("Render detected — installing Playwright browsers...")
         os.system("playwright install --with-deps chromium")
-        print("Playwright browsers installed.")
+        logger.info("Playwright browsers installed successfully.")
     else:
-        print("Not on Render – skipping forced install.")
-
+        logger.info("Not on Render — skipping browser install.")
 
 # =====================================================
-# ORDER UPDATER – ONLY NOTIFIES ON FAILURE
+# MAIN ORDER UPDATER — ONLY NOTIFIES ON FAILURE
 # =====================================================
 async def update_orders():
-    await asyncio.sleep(10)  # Wait a bit for bot to start
+    await asyncio.sleep(15)  # give everything time to start
 
     while True:
         failed_orders = []
-        has_error = False
-        error_msg = ""
+        critical_error = None
 
         try:
             async with async_playwright() as p:
-                # This will auto-download if missing (fallback safety)
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context()
                 page = await context.new_page()
@@ -56,103 +53,92 @@ async def update_orders():
                 await page.click("input#wp-submit")
                 await page.wait_for_load_state("networkidle")
 
-                # Go to processing orders
+                # Go to Processing orders
                 await page.goto(
                     "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
                     wait_until="networkidle",
-                    timeout=90000
+                    timeout=120000
                 )
 
-                # Wait for table
-                try:
-                    await page.wait_for_selector("table.wp-list-table, table.widefat", timeout=30000)
-                except:
-                    await page.screenshot(path="/tmp/debug.png")
-                    await bot.send_document(CHAT_ID, types.InputFile("/tmp/debug.png"),
-                                           caption="Could not find orders table")
-                    has_error = True
+                await page.wait_for_selector("table.wp-list-table, table.widefat", timeout=30000)
 
-                # Find "Behandlas" orders
-                rows = await page.query_selector_all("table.wp-list-table tbody tr, table.widefat tbody tr")
+                rows = await page.query_selector_all("tbody tr")
                 behandlas_orders = []
 
                 for row in rows:
-                    status_el = await row.query_selector("td.column-order_status mark span, td.order_status")
-                    if not status_el:
-                        continue
-                    status_text = await status_el.inner_text()
-                    if "Behandlas" in status_text or "Processing" in status_text:
-                        link_el = await row.query_selector("td.column-order_number a")
-                        href = await link_el.get_attribute("href") if link_el else None
-                        order_id = re.search(r'id=(\d+)|post=(\d+)', href or "").group(1) or \
-                                   re.search(r'id=(\d+)|post=(\d+)', href or "").group(2)
-                        if order_id:
-                            behandlas_orders.append((order_id, href))
+                    status = await row.query_selector("td.column-order_status mark span, td.order_status span")
+                    if status:
+                        text = await status.inner_text()
+                        if "Behandl" in text.lower() or "processing" in text.lower():
+                            link = await row.query_selector("td.column-order_number a")
+                            href = await link.get_attribute("href") if link else None
+                            order_id = re.search(r'id=(\d+)|post=(\d+)', href or "", re.I)
+                            if order_id:
+                                oid = order_id.group(1) or order_id.group(2)
+                                behandlas_orders.append((oid, href))
 
                 # Process each order
                 for order_id, url in behandlas_orders:
                     try:
                         order_page = await context.new_page()
                         await order_page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
                         content = (await order_page.content()).lower()
+
                         if "ditt foto är nu redigerat" in content or "your photo has now been edited" in content:
-                            # Click "Markera som klar" button
-                            button = await order_page.query_selector(
-                                "#woocommerce-order-actions button.woocommerce-order-actions__button-complete, "
-                                "#order_status option[value='wc-completed']"
+                            # Click Complete order button
+                            complete_btn = await order_page.query_selector(
+                                "button.woocommerce-order-actions__button-complete, "
+                                "button[value='complete'], "
+                                "input[name='wc_order_action'][value='complete']"
                             )
-                            if button:
-                                await button.click()
+                            if complete_btn:
+                                await complete_btn.click()
                                 await asyncio.sleep(2)
-                                await order_page.close()
                             else:
                                 failed_orders.append(order_id)
                         else:
                             failed_orders.append(order_id)
+
                         await order_page.close()
                     except Exception as e:
                         failed_orders.append(order_id)
-                        print(f"Error processing order {order_id}: {e}")
+                        logger.error(f"Error processing order #{order_id}: {e}")
 
                 await browser.close()
 
         except Exception as e:
-            has_error = True
-            error_msg = str(e)
-            print(f"Critical error in updater: {e}")
+            critical_error = str(e)
+            logger.exception("Critical error in order updater")
 
-        # NOTIFY ONLY IF SOMETHING WENT WRONG
+        # ONLY SEND MESSAGE IF SOMETHING FAILED
         if failed_orders:
             await bot.send_message(
                 CHAT_ID,
-                f"Failed to complete {len(failed_orders)} order(s):\n"
+                f"Failed to auto-complete {len(failed_orders)} order(s):\n"
                 f"`#{', #'.join(failed_orders)}`",
                 parse_mode="Markdown"
             )
 
-        if has_error:
-            await bot.send_message(CHAT_ID, f"Order updater crashed:\n`{error_msg}`", parse_mode="Markdown")
+        if critical_error:
+            await bot.send_message(CHAT_ID, f"Updater crashed:\n`{critical_error}`", parse_mode="Markdown")
 
-        # No message if everything worked perfectly
+        # No message = everything worked perfectly
 
-        await asyncio.sleep(60)  # Check every 60 seconds
-
+        await asyncio.sleep(60)
 
 # =====================================================
 # BOT COMMANDS
 # =====================================================
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def start(message: types.Message):
     await message.answer(
-        "Bot is running!\n\n"
-        "I will only message you if an order fails to update.\n"
-        "No news = good news"
+        "Auto-updater is running!\n\n"
+        "You will ONLY receive a message when an order fails to complete.\n"
+        "Silence = all good"
     )
 
-
 # =====================================================
-# DUMMY WEB SERVER FOR RENDER
+# DUMMY WEB SERVER (required by Render)
 # =====================================================
 from aiohttp import web
 
@@ -166,23 +152,21 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
     await site.start()
-    print(f"Web server running on port {os.getenv('PORT', 10000)}")
-
+    logger.info(f"Web server started on port {os.getenv('PORT', 10000)}")
 
 # =====================================================
 # MAIN
 # =====================================================
 async def main():
-    # Critical: Install browsers on Render
+    # 1. Install browsers on Render
     await install_playwright_browsers()
 
-    # Start background tasks
+    # 2. Start background tasks
     asyncio.create_task(start_web_server())
     asyncio.create_task(update_orders())
 
-    # Start bot polling
+    # 3. Start polling
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
