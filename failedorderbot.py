@@ -39,7 +39,8 @@ async def run_once():
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # ===== NEW BROWSER LAUNCH =====
+            browser = await p.chromium.launch(headless=False)  # visible browser (debugging)
             context = await browser.new_context()
             page = await context.new_page()
 
@@ -49,7 +50,7 @@ async def run_once():
             await page.fill("input[name='pwd']", WP_PASS)
             await page.click("input#wp-submit")
 
-            # Orders page
+            # Navigate to orders page
             await page.goto(
                 "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
                 wait_until="networkidle",
