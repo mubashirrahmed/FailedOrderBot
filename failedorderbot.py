@@ -18,7 +18,7 @@ WP_PASS = os.getenv("WP_PASS")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", 120))
 PORT = int(os.getenv("PORT", 10000))
 
-reported_failed_orders = set()  # prevent duplicate alerts
+reported_failed_orders = set()  # avoid duplicate alerts
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -29,6 +29,7 @@ bot = Bot(token=BOT_TOKEN)
 async def send_telegram_alert(order_id: str):
     message = f"❌ Failed order detected\nOrder ID: {order_id}"
     await bot.send_message(chat_id=CHAT_ID, text=message)
+    print(f"📩 Telegram alert sent for failed order: {order_id}")
 
 # =====================================================
 # PLAYWRIGHT LOGIC
@@ -37,35 +38,52 @@ async def send_telegram_alert(order_id: str):
 async def run_once():
     global reported_failed_orders
 
+    print("🔍 Starting order scan...")
     try:
         async with async_playwright() as p:
-            # ===== NEW BROWSER LAUNCH =====
-            browser = await p.chromium.launch(headless=False)  # visible browser (debugging)
+            browser = await p.chromium.launch(headless=True)  # headless for Render
             context = await browser.new_context()
             page = await context.new_page()
 
-            # Login
-            await page.goto("https://korkortsfoton.se/wp-login.php?loggedout=true&wp_lang=sv_SE")
-            await page.fill("input[name='log']", WP_USER)
-            await page.fill("input[name='pwd']", WP_PASS)
-            await page.click("input#wp-submit")
+            # -------- LOGIN --------
+            try:
+                await page.goto("https://korkortsfoton.se/wp-login.php?loggedout=true&wp_lang=sv_SE")
+                print("Login page loaded")
+                await page.fill("input[name='log']", WP_USER)
+                await page.fill("input[name='pwd']", WP_PASS)
+                await page.click("input#wp-submit")
+                await page.wait_for_load_state("networkidle")
+                print("Login submitted")
+            except Exception as e:
+                print("❌ Login failed:", e)
+                await browser.close()
+                return
 
-            # Navigate to orders page
-            await page.goto(
-                "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
-                wait_until="networkidle",
-                timeout=90000
-            )
-
-            await page.wait_for_selector("table", timeout=90000)
+            # -------- ORDERS PAGE --------
+            try:
+                await page.goto(
+                    "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
+                    wait_until="networkidle",
+                    timeout=90000
+                )
+                await page.wait_for_selector("table", timeout=90000)
+                print("Orders page loaded")
+            except Exception as e:
+                print("❌ Orders page load failed:", e)
+                await browser.close()
+                return
 
             rows = await page.query_selector_all("table tbody tr")
+            print(f"Total orders found on page: {len(rows)}")
+
             failed_orders = []
 
-            for row in rows:
+            for i, row in enumerate(rows, start=1):
                 try:
-                    status = await row.inner_text()
-                    if "Behandlas" in status:
+                    status_text = await row.inner_text()
+                    print(f"Checking order row {i}: {status_text.strip()[:50]}...")
+
+                    if "Behandlas" in status_text:
                         link = await row.query_selector("a")
                         if link:
                             href = await link.get_attribute("href")
@@ -75,28 +93,29 @@ async def run_once():
 
                                 order_page = await context.new_page()
                                 await order_page.goto(href, timeout=30000)
-                                text = await order_page.evaluate(
-                                    "document.body.innerText.toLowerCase()"
-                                )
+                                text = await order_page.evaluate("document.body.innerText.toLowerCase()")
 
-                                # Check if order failed
+                                # Failed condition: "ditt foto är nu redigerat" not present
                                 if "ditt foto är nu redigerat" not in text:
                                     failed_orders.append(order_id)
+                                    print(f"❌ Order {order_id} is failed / not updated")
 
                                 await order_page.close()
-                except Exception:
-                    continue
+                except Exception as e:
+                    print(f"❌ Error checking row {i}: {e}")
 
-            # Send alerts only for NEW failed orders
+            # Send Telegram alerts only for new failed orders
             for order_id in failed_orders:
                 if order_id not in reported_failed_orders:
                     reported_failed_orders.add(order_id)
                     await send_telegram_alert(order_id)
 
+            print(f"✅ Scan completed: {len(rows)} orders checked, {len(failed_orders)} failed orders")
+
             await browser.close()
 
     except Exception as e:
-        print("Scan error:", e)
+        print("❌ Scan error:", e)
 
 # =====================================================
 # BACKGROUND LOOP
@@ -104,12 +123,12 @@ async def run_once():
 
 async def order_monitor_loop():
     while True:
-        print("🔍 Scanning orders...")
         await run_once()
+        print(f"⏳ Waiting {CHECK_INTERVAL} seconds before next scan...\n")
         await asyncio.sleep(CHECK_INTERVAL)
 
 # =====================================================
-# HEALTH CHECK (RENDER / RAILWAY)
+# HEALTH CHECK (RENDER)
 # =====================================================
 
 async def health(request):
@@ -122,20 +141,17 @@ async def start_web_app():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Health server running on {PORT}")
+    print(f"🌐 Health server running on port {PORT}")
 
 # =====================================================
 # START BOT
 # =====================================================
 
 async def main():
-    print("🤖 Bot starting (send-only mode)")
-
-    # Start health server and background monitoring
+    print("🤖 Failed Order Bot starting...")
     asyncio.create_task(start_web_app())
     asyncio.create_task(order_monitor_loop())
-
-    # Keep the main task alive
+    # Keep main alive
     while True:
         await asyncio.sleep(3600)
 
