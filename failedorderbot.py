@@ -4,6 +4,9 @@ import re
 import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # =====================================================
 # CONFIGURATION
@@ -38,7 +41,10 @@ async def send_telegram_message(message):
 async def run_once():
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+    headless=True,
+    executable_path="/usr/bin/chromium-browser"  # system-installed Chrome on Render
+)
             context = await browser.new_context()
             page = await context.new_page()
 
@@ -136,3 +142,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
