@@ -23,10 +23,10 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 120))
 PORT = int(os.getenv("PORT", 10000))
 
 # =====================================================
-# TELEGRAM FUNCTION
+# TELEGRAM
 # =====================================================
-async def send_telegram_message(message):
-    async with httpx.AsyncClient() as client:
+async def send_telegram_message(message: str):
+    async with httpx.AsyncClient(timeout=20) as client:
         try:
             await client.post(
                 TELEGRAM_API,
@@ -41,22 +41,24 @@ async def send_telegram_message(message):
 async def run_once():
     try:
         async with async_playwright() as p:
-            # FIXED: Corrected indentation and removed stray parenthesis/newlines
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
+            )
+
             context = await browser.new_context()
             page = await context.new_page()
 
             # ---------- LOGIN ----------
-            await page.goto(WP_URL)
+            await page.goto(WP_URL, timeout=60000)
             await page.fill("input[name='log']", WP_EMAIL)
             await page.fill("input[name='pwd']", WP_PASSWORD)
             await page.click("input#wp-submit")
-            await page.wait_for_timeout(5000)
+            await page.wait_for_load_state("networkidle")
 
             # ---------- ORDERS ----------
             await page.goto(
                 "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
-                wait_until="networkidle",
                 timeout=60000
             )
 
@@ -64,17 +66,18 @@ async def run_once():
             behandlas_orders = []
 
             for row in rows:
-                text = await row.inner_text()
-                if "Behandlas" in text:
+                text = (await row.inner_text()).lower()
+                if "behandlas" in text:
                     link = await row.query_selector("a")
                     if link:
                         href = await link.get_attribute("href")
-                        match = re.search(r'post=(\d+)', href)
-                        if match:
-                            behandlas_orders.append((match.group(1), href))
+                        if href:
+                            match = re.search(r"post=(\d+)", href)
+                            if match:
+                                behandlas_orders.append((match.group(1), href))
 
             if not behandlas_orders:
-                print("ℹ️ No Behandlas orders found.")
+                print("ℹ️ No Behandlas orders found")
                 await browser.close()
                 return
 
@@ -82,31 +85,35 @@ async def run_once():
 
             for order_id, url in behandlas_orders:
                 p2 = await context.new_page()
-                await p2.goto(url)
-                content = await p2.content()
+                await p2.goto(url, timeout=60000)
 
-                if "ditt foto är nu redigerat" in content.lower():
+                html = (await p2.content()).lower()
+                if "ditt foto är nu redigerat" in html:
                     btn = await p2.query_selector("#woocommerce-order-actions button")
                     if btn:
                         await btn.click()
                         updated.append(order_id)
+
                 await p2.close()
 
             if updated:
-                await send_telegram_message(f"✅ Updated orders: {updated}")
+                await send_telegram_message(
+                    "✅ Updated orders:\n" + ", ".join(updated)
+                )
 
             await browser.close()
+
     except Exception as e:
-        await send_telegram_message(f"❌ Bot error: {e}")
-        print("Error in run_once:", e)
+        await send_telegram_message(f"❌ Bot error:\n{e}")
+        print("Bot error:", e)
 
 # =====================================================
-# BACKGROUND LOOP
+# LOOP
 # =====================================================
 async def order_monitor_loop():
     while True:
         await run_once()
-        print(f"⏳ Waiting {CHECK_INTERVAL} seconds before next scan...\n")
+        print(f"⏳ Waiting {CHECK_INTERVAL} seconds...\n")
         await asyncio.sleep(CHECK_INTERVAL)
 
 # =====================================================
@@ -117,7 +124,7 @@ async def health(request):
 
 async def start_web_app():
     app = web.Application()
-    app.add_routes([web.get("/", health)])
+    app.router.add_get("/", health)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -125,7 +132,7 @@ async def start_web_app():
     print(f"🌐 Health server running on port {PORT}")
 
 # =====================================================
-# START BOT
+# MAIN
 # =====================================================
 async def main():
     print("🤖 Failed Order Bot starting...")
