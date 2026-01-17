@@ -41,12 +41,14 @@ async def send_telegram_message(message):
 async def run_once():
     try:
         async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)   
-
+            # ✅ FIX: Sahi tarike se browser launch kiya
+            browser = await p.chromium.launch(headless=True)
+            
             context = await browser.new_context()
             page = await context.new_page()
 
             # ---------- LOGIN ----------
+            print("Logging in...")
             await page.goto(WP_URL)
             await page.fill("input[name='log']", WP_EMAIL)
             await page.fill("input[name='pwd']", WP_PASSWORD)
@@ -54,6 +56,7 @@ async def run_once():
             await page.wait_for_timeout(5000)
 
             # ---------- ORDERS ----------
+            print("Checking orders...")
             await page.goto(
                 "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
                 wait_until="networkidle",
@@ -74,13 +77,14 @@ async def run_once():
                             behandlas_orders.append((match.group(1), href))
 
             if not behandlas_orders:
-                await send_telegram_message("ℹ️ No Behandlas orders found.")
+                print("ℹ️ No Behandlas orders found.")
                 await browser.close()
                 return
 
             updated = []
 
             for order_id, url in behandlas_orders:
+                print(f"Checking order {order_id}...")
                 p2 = await context.new_page()
                 await p2.goto(url)
                 content = await p2.content()
@@ -92,6 +96,7 @@ async def run_once():
                     if btn:
                         await btn.click()
                         updated.append(order_id)
+                        print(f"Updated order {order_id}")
 
                 await p2.close()
 
@@ -99,6 +104,7 @@ async def run_once():
                 await send_telegram_message(f"✅ Updated orders: {updated}")
 
             await browser.close()
+            
     except Exception as e:
         await send_telegram_message(f"❌ Bot error: {e}")
         print("Error in run_once:", e)
@@ -140,6 +146,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
