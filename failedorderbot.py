@@ -1,126 +1,107 @@
+import asyncio
 import os
 import re
-import asyncio
+import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
-from aiogram import Bot, Dispatcher
 
 # =====================================================
-# CONFIG
+# CONFIGURATION
 # =====================================================
+WP_URL = "https://korkortsfoton.se/wp-login.php?loggedout=true&wp_lang=sv_SE"
+WP_EMAIL = os.getenv("WP_EMAIL")
+WP_PASSWORD = os.getenv("WP_PASSWORD")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-WP_USER = os.getenv("WP_USER")
-WP_PASS = os.getenv("WP_PASS")
-
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", 120))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 120))  # seconds
 PORT = int(os.getenv("PORT", 10000))
 
-reported_failed_orders = set()  # avoid duplicate alerts
-
-bot = Bot(token=BOT_TOKEN)
+# =====================================================
+# TELEGRAM FUNCTION
+# =====================================================
+async def send_telegram_message(message):
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(
+                TELEGRAM_API,
+                json={"chat_id": CHAT_ID, "text": message}
+            )
+        except Exception as e:
+            print("Telegram error:", e)
 
 # =====================================================
-# TELEGRAM ALERT
+# BOT LOGIC
 # =====================================================
-
-async def send_telegram_alert(order_id: str):
-    message = f"❌ Failed order detected\nOrder ID: {order_id}"
-    await bot.send_message(chat_id=CHAT_ID, text=message)
-    print(f"📩 Telegram alert sent for failed order: {order_id}")
-
-# =====================================================
-# PLAYWRIGHT LOGIC
-# =====================================================
-
 async def run_once():
-    global reported_failed_orders
-
-    print("🔍 Starting order scan...")
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)  # headless for Render
+            browser = await p.chromium.launch(headless=True)
             context = await browser.new_context()
             page = await context.new_page()
 
-            # -------- LOGIN --------
-            try:
-                await page.goto("https://korkortsfoton.se/wp-login.php?loggedout=true&wp_lang=sv_SE")
-                print("Login page loaded")
-                await page.fill("input[name='log']", WP_USER)
-                await page.fill("input[name='pwd']", WP_PASS)
-                await page.click("input#wp-submit")
-                await page.wait_for_load_state("networkidle")
-                print("Login submitted")
-            except Exception as e:
-                print("❌ Login failed:", e)
-                await browser.close()
-                return
+            # ---------- LOGIN ----------
+            await page.goto(WP_URL)
+            await page.fill("input[name='log']", WP_EMAIL)
+            await page.fill("input[name='pwd']", WP_PASSWORD)
+            await page.click("input#wp-submit")
+            await page.wait_for_timeout(5000)
 
-            # -------- ORDERS PAGE --------
-            try:
-                await page.goto(
-                    "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
-                    wait_until="networkidle",
-                    timeout=90000
-                )
-                await page.wait_for_selector("table", timeout=90000)
-                print("Orders page loaded")
-            except Exception as e:
-                print("❌ Orders page load failed:", e)
-                await browser.close()
-                return
+            # ---------- ORDERS ----------
+            await page.goto(
+                "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
+                wait_until="networkidle",
+                timeout=60000
+            )
 
             rows = await page.query_selector_all("table tbody tr")
-            print(f"Total orders found on page: {len(rows)}")
+            behandlas_orders = []
 
-            failed_orders = []
+            for row in rows:
+                text = await row.inner_text()
+                if "Behandlas" in text:
+                    link = await row.query_selector("a")
+                    if link:
+                        href = await link.get_attribute("href")
+                        match = re.search(r'post=(\d+)', href)
+                        if match:
+                            behandlas_orders.append((match.group(1), href))
 
-            for i, row in enumerate(rows, start=1):
-                try:
-                    status_text = await row.inner_text()
-                    print(f"Checking order row {i}: {status_text.strip()[:50]}...")
+            if not behandlas_orders:
+                await send_telegram_message("ℹ️ No Behandlas orders found.")
+                await browser.close()
+                return
 
-                    if "Behandlas" in status_text:
-                        link = await row.query_selector("a")
-                        if link:
-                            href = await link.get_attribute("href")
-                            match = re.search(r'(?:post=|\bid=)(\d+)', href)
-                            if match:
-                                order_id = match.group(1)
+            updated = []
 
-                                order_page = await context.new_page()
-                                await order_page.goto(href, timeout=30000)
-                                text = await order_page.evaluate("document.body.innerText.toLowerCase()")
+            for order_id, url in behandlas_orders:
+                p2 = await context.new_page()
+                await p2.goto(url)
+                content = await p2.content()
 
-                                # Failed condition: "ditt foto är nu redigerat" not present
-                                if "ditt foto är nu redigerat" not in text:
-                                    failed_orders.append(order_id)
-                                    print(f"❌ Order {order_id} is failed / not updated")
+                if "ditt foto är nu redigerat" in content.lower():
+                    btn = await p2.query_selector(
+                        "#woocommerce-order-actions button"
+                    )
+                    if btn:
+                        await btn.click()
+                        updated.append(order_id)
 
-                                await order_page.close()
-                except Exception as e:
-                    print(f"❌ Error checking row {i}: {e}")
+                await p2.close()
 
-            # Send Telegram alerts only for new failed orders
-            for order_id in failed_orders:
-                if order_id not in reported_failed_orders:
-                    reported_failed_orders.add(order_id)
-                    await send_telegram_alert(order_id)
-
-            print(f"✅ Scan completed: {len(rows)} orders checked, {len(failed_orders)} failed orders")
+            if updated:
+                await send_telegram_message(f"✅ Updated orders: {updated}")
 
             await browser.close()
-
     except Exception as e:
-        print("❌ Scan error:", e)
+        await send_telegram_message(f"❌ Bot error: {e}")
+        print("Error in run_once:", e)
 
 # =====================================================
 # BACKGROUND LOOP
 # =====================================================
-
 async def order_monitor_loop():
     while True:
         await run_once()
@@ -130,7 +111,6 @@ async def order_monitor_loop():
 # =====================================================
 # HEALTH CHECK (RENDER)
 # =====================================================
-
 async def health(request):
     return web.Response(text="OK")
 
@@ -146,7 +126,6 @@ async def start_web_app():
 # =====================================================
 # START BOT
 # =====================================================
-
 async def main():
     print("🤖 Failed Order Bot starting...")
     asyncio.create_task(start_web_app())
