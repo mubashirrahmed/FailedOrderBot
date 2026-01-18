@@ -5,6 +5,7 @@ import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
 
 load_dotenv()
 
@@ -42,16 +43,17 @@ async def run_once():
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=True,
-                
-                args=[
-                      "--no-sandbox",
-                      "--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage",
-                      "--disable-gpu",
-                      "--single-process"
-    ]
-            )
+    headless=True,
+    channel="chromium",
+    args=[
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--single-process",
+    ],
+)
+
 
             context = await browser.new_context()
             page = await context.new_page()
@@ -150,4 +152,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
