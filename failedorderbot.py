@@ -43,7 +43,14 @@ async def run_once():
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"]
+                
+                args=[
+                      "--no-sandbox",
+                      "--disable-setuid-sandbox",
+                      "--disable-dev-shm-usage",
+                      "--disable-gpu",
+                      "--single-process"
+    ]
             )
 
             context = await browser.new_context()
@@ -143,3 +150,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
