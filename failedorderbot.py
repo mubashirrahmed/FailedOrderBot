@@ -5,14 +5,8 @@ import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-import subprocess
 
-subprocess.run(["playwright", "install", "chromium"], check=True)
-
-
-# Removed explicit browser path configuration
-import os
-
+# Set this early to use Render's cached path
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
 
 load_dotenv()
@@ -31,6 +25,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 120))
 PORT = int(os.getenv("PORT", 10000))
 
+# =====================================================
 # TELEGRAM
 # =====================================================
 async def send_telegram_message(message: str):
@@ -59,26 +54,21 @@ async def run_once():
                     "--single-process",
                 ],
             )
-
             context = await browser.new_context()
             page = await context.new_page()
-
             # ---------- LOGIN ----------
             await page.goto(WP_URL, timeout=60000)
             await page.fill("input[name='log']", WP_EMAIL)
             await page.fill("input[name='pwd']", WP_PASSWORD)
             await page.click("input#wp-submit")
             await page.wait_for_load_state("networkidle")
-
             # ---------- ORDERS ----------
             await page.goto(
                 "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
                 timeout=60000,
             )
-
             rows = await page.query_selector_all("table tbody tr")
             behandlas_orders = []
-
             for row in rows:
                 text = (await row.inner_text()).lower()
                 if "behandlas" in text:
@@ -89,34 +79,26 @@ async def run_once():
                             match = re.search(r"post=(\d+)", href)
                             if match:
                                 behandlas_orders.append((match.group(1), href))
-
             if not behandlas_orders:
                 print("ℹ️ No Behandlas orders found")
                 await browser.close()
                 return
-
             updated = []
-
             for order_id, url in behandlas_orders:
                 p2 = await context.new_page()
                 await p2.goto(url, timeout=60000)
-
                 html = (await p2.content()).lower()
                 if "ditt foto är nu redigerat" in html:
                     btn = await p2.query_selector("#woocommerce-order-actions button")
                     if btn:
                         await btn.click()
                         updated.append(order_id)
-
                 await p2.close()
-
             if updated:
                 await send_telegram_message(
                     "✅ Updated orders:\n" + ", ".join(updated)
                 )
-
             await browser.close()
-
     except Exception as e:
         await send_telegram_message(f"❌ Bot error:\n{e}")
         print("Bot error:", e)
@@ -157,8 +139,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-
