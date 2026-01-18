@@ -6,6 +6,9 @@ from aiohttp import web
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
+os.environ["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"] = (
+    "/opt/render/.cache/ms-playwright/chromium_headless_shell-1148/chrome-linux/headless_shell"
+)
 
 load_dotenv()
 
@@ -42,9 +45,8 @@ async def send_telegram_message(message: str):
 async def run_once():
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
+browser = await p.chromium.launch(
     headless=True,
-    channel="chromium",
     args=[
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -53,6 +55,7 @@ async def run_once():
         "--single-process",
     ],
 )
+
 
 
             context = await browser.new_context()
@@ -152,5 +155,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
