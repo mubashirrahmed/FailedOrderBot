@@ -7,6 +7,9 @@ from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 
 # Removed explicit browser path configuration
+import os
+
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
 
 load_dotenv()
 
@@ -150,6 +153,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
