@@ -42,8 +42,8 @@ async def send_telegram_message(message: str):
 async def run_once():
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=False,
+            browser = await p.webkit.launch(
+                headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
@@ -150,4 +150,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
