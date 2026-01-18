@@ -34,7 +34,7 @@ async def send_telegram_message(message: str):
         try:
             await client.post(
                 TELEGRAM_API,
-                json={"chat_id": CHAT_ID, "text": message}
+                json={"chat_id": CHAT_ID, "text": message},
             )
         except Exception as e:
             print("Telegram error:", e)
@@ -45,18 +45,16 @@ async def send_telegram_message(message: str):
 async def run_once():
     try:
         async with async_playwright() as p:
-browser = await p.chromium.launch(
-    headless=True,
-    args=[
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--single-process",
-    ],
-)
-
-
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process",
+                ],
+            )
 
             context = await browser.new_context()
             page = await context.new_page()
@@ -71,7 +69,7 @@ browser = await p.chromium.launch(
             # ---------- ORDERS ----------
             await page.goto(
                 "https://korkortsfoton.se/wp-admin/admin.php?page=wc-orders&status=wc-processing",
-                timeout=60000
+                timeout=60000,
             )
 
             rows = await page.query_selector_all("table tbody tr")
@@ -155,5 +153,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
