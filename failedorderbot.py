@@ -5,6 +5,10 @@ import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+import subprocess
+
+subprocess.run(["playwright", "install", "chromium"], check=True)
+
 
 # Removed explicit browser path configuration
 import os
@@ -153,6 +157,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
