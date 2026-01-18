@@ -5,10 +5,8 @@ import httpx
 from aiohttp import web
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
-os.environ["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"] = (
-    "/opt/render/.cache/ms-playwright/chromium_headless_shell-1148/chrome-linux/headless_shell"
-)
+
+# Removed explicit browser path configuration
 
 load_dotenv()
 
@@ -26,7 +24,6 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 120))
 PORT = int(os.getenv("PORT", 10000))
 
-# =====================================================
 # TELEGRAM
 # =====================================================
 async def send_telegram_message(message: str):
